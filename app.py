@@ -136,10 +136,13 @@ def get_rtc_configuration() -> dict:
 # ============================================================================
 # 3. SUONO DI ALLARME
 # ============================================================================
+BEEP_SAMPLE_RATE = 22050
+
+
 @st.cache_data(show_spinner=False)
-def make_beep_wav() -> bytes:
-    """Genera in memoria un breve allarme (due beep acuti + uno piu' grave) in formato WAV."""
-    sr = 22050
+def _beep_pcm() -> bytes:
+    """Segnale base dell'allarme (due beep acuti + uno piu' grave), PCM 16 bit mono."""
+    sr = BEEP_SAMPLE_RATE
 
     def tone(freq: float, dur: float, vol: float = 0.6) -> np.ndarray:
         t = np.arange(int(sr * dur)) / sr
@@ -152,13 +155,27 @@ def make_beep_wav() -> bytes:
 
     gap = np.zeros(int(sr * 0.08))
     signal = np.concatenate([tone(880, 0.22), gap, tone(880, 0.22), gap, tone(660, 0.35)])
-    pcm = (signal * 32767).astype(np.int16)
+    return (signal * 32767).astype(np.int16).tobytes()
+
+
+def make_beep_wav(variant: int = 0) -> bytes:
+    """
+    Restituisce l'allarme in formato WAV.
+
+    `variant` rende ogni file diverso da quelli precedenti scrivendo un valore minuscolo
+    (max 199/32767, inudibile) negli ultimi due campioni, che sono silenzio. Serve perche'
+    Streamlit rifiuta due elementi audio identici nella stessa esecuzione dello script
+    (StreamlitDuplicateElementId), e il ciclo di aggiornamento dura per tutta la sessione.
+    """
+    pcm = np.frombuffer(_beep_pcm(), dtype=np.int16).copy()
+    pcm[-1] = variant % 200
+    pcm[-2] = (variant // 200) % 200
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
-        wf.setframerate(sr)
+        wf.setframerate(BEEP_SAMPLE_RATE)
         wf.writeframes(pcm.tobytes())
     return buf.getvalue()
 
@@ -167,13 +184,18 @@ def play_beep(placeholder):
     """
     Riproduce il suono nel browser. Si svuota prima il segnaposto, cosi' Streamlit
     ricrea l'elemento <audio> e l'autoplay riparte anche per allarmi ravvicinati.
+    Ogni chiamata usa una variante diversa del file (vedi make_beep_wav).
     """
+    n = st.session_state.get("beep_n", 0) + 1
+    st.session_state["beep_n"] = n
+    wav = make_beep_wav(n)
+
     placeholder.empty()
     time.sleep(0.15)
     try:
-        placeholder.audio(make_beep_wav(), format="audio/wav", autoplay=True)
+        placeholder.audio(wav, format="audio/wav", autoplay=True)
     except TypeError:  # versioni vecchie di Streamlit senza il parametro autoplay
-        placeholder.audio(make_beep_wav(), format="audio/wav")
+        placeholder.audio(wav, format="audio/wav")
 
 
 # ============================================================================
